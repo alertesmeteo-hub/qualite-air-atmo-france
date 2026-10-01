@@ -1,0 +1,49 @@
+name: Mise à jour qualité de l'air (Atmo France)
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Les données Atmo France sont rafraîchies vers 12h00 Paris ; on vise un peu après,
+    # à 11h30 UTC (13h30 Paris en été, 12h30 en hiver) pour laisser de la marge.
+    - cron: "30 11 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: air-quality-production
+  cancel-in-progress: true
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Récupérer le dépôt
+        uses: actions/checkout@v5
+
+      - name: Installer Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Récupérer les données Atmo France
+        env:
+          ATMO_USERNAME: ${{ secrets.ATMO_USERNAME }}
+          ATMO_PASSWORD: ${{ secrets.ATMO_PASSWORD }}
+        run: node scripts/fetch-atmo.mjs --output-dir data
+
+      - name: Vérifier la sortie
+        run: |
+          test -f data/departements.json
+          node -e "const d=require('./data/departements.json'); console.log(Object.keys(d.departements).length + ' departements, manquants: ' + d.manquants.join(', '))"
+
+      - name: Publier les données
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/departements.json
+          git diff --staged --quiet && echo "Rien de nouveau." && exit 0
+          git commit -m "chore: mise à jour qualité de l'air Atmo France"
+          git push
