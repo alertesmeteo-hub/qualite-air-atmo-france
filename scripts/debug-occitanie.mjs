@@ -24,6 +24,10 @@ async function main() {
   });
   const j2 = await r2.json();
   console.log("aasqa=76 ->", r2.status, "features:", j2.features?.length);
+  console.log("Types de zone:", [...new Set(j2.features.map((f) => f.properties.type_zone))]);
+  console.log("5 premiers echantillons:", JSON.stringify(j2.features.slice(0, 5).map((f) => f.properties), null, 1));
+  const code66 = j2.features.filter((f) => String(f.properties.code_zone).startsWith("66") || String(f.properties.lib_zone || "").match(/perpignan|roussillon|pyren/i));
+  console.log("Zones liees au 66 (par code ou nom):", JSON.stringify(code66.map((f) => f.properties), null, 1));
 }
 
 main().catch(console.error);
