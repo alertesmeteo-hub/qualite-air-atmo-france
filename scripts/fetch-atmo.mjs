@@ -36,6 +36,9 @@ const DOM_PREFIXES = ["971", "972", "973", "974", "976"];
 // AASQA absentes de la requete "toutes zones" par defaut (constate empiriquement, voir
 // commentaire en tete de fichier) : a interroger explicitement en plus.
 const AASQA_MANQUANTES_PAR_DEFAUT = ["76", "53", "03"];
+// AASQA couvrant un seul DOM : associer directement par aasqa plutot que de parser code_zone
+// (voir commentaire plus bas sur le format non standard de l'AASQA Guyane).
+const AASQA_DOM_DEPT = { "01": "971", "02": "972", "03": "973", "04": "974", "06": "976" };
 
 function parseArgs(argv) {
   const args = { outputDir: "data" };
@@ -177,12 +180,17 @@ async function main() {
       if (!communes[codeZone]) communes[codeZone] = { nom: p.lib_zone ?? null, typeZone, lat: p.y_wgs84 ?? null, lon: p.x_wgs84 ?? null, parJour: {} };
       communes[codeZone].parJour[dateIso] = valeurs;
 
-      // Determination du departement : prefixe INSEE pour les zones "commune" (rapide, fiable),
-      // geolocalisation pour tout le reste (EPCI, ou type inattendu) via les coordonnees fournies.
-      let dept = null;
-      if (typeZone === "commune" && /^(\d{5}|2[ab]\d{3})$/i.test(codeZone)) {
+      // Determination du departement, par ordre de priorite :
+      // 1) AASQA mono-departementale (DOM) : le code_zone de l'AASQA Guyane (03) utilise un
+      //    format a 9 chiffres non standard (ex: "249730045") et ses x_wgs84/y_wgs84 semblent
+      //    inverses avec x_reg/y_reg (constate en test reel) ; inutile de parser quoi que ce
+      //    soit, une AASQA DOM ne couvre jamais qu'un seul departement.
+      // 2) prefixe INSEE pour les zones "commune" bien formees (rapide, fiable)
+      // 3) geolocalisation pour tout le reste (EPCI, ou type/format inattendu)
+      let dept = AASQA_DOM_DEPT[String(p.aasqa)] ?? null;
+      if (!dept && typeZone === "commune" && /^(\d{5}|2[ab]\d{3})$/i.test(codeZone)) {
         dept = departementDeCommune(codeZone);
-      } else if (typeof p.x_wgs84 === "number" && typeof p.y_wgs84 === "number") {
+      } else if (!dept && typeof p.x_wgs84 === "number" && typeof p.y_wgs84 === "number") {
         dept = departementParCoordonnees(departementsGeo, p.x_wgs84, p.y_wgs84);
       }
       if (!dept) {
