@@ -28,6 +28,12 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Debug Guyane (temporaire)
+        env:
+          ATMO_USERNAME: ${{ secrets.ATMO_USERNAME }}
+          ATMO_PASSWORD: ${{ secrets.ATMO_PASSWORD }}
+        run: node scripts/debug-guyane.mjs
+
       - name: Récupérer les données Atmo France
         env:
           ATMO_USERNAME: ${{ secrets.ATMO_USERNAME }}

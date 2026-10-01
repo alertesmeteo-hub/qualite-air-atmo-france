@@ -180,7 +180,7 @@ async function main() {
       // Determination du departement : prefixe INSEE pour les zones "commune" (rapide, fiable),
       // geolocalisation pour tout le reste (EPCI, ou type inattendu) via les coordonnees fournies.
       let dept = null;
-      if (typeZone === "commune" && /^\d{2}|^2[ab]/i.test(codeZone)) {
+      if (typeZone === "commune" && /^(\d{5}|2[ab]\d{3})$/i.test(codeZone)) {
         dept = departementDeCommune(codeZone);
       } else if (typeof p.x_wgs84 === "number" && typeof p.y_wgs84 === "number") {
         dept = departementParCoordonnees(departementsGeo, p.x_wgs84, p.y_wgs84);
