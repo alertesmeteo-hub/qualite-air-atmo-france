@@ -28,6 +28,14 @@ async function main() {
   console.log("5 premiers echantillons:", JSON.stringify(j2.features.slice(0, 5).map((f) => f.properties), null, 1));
   const code66 = j2.features.filter((f) => String(f.properties.code_zone).startsWith("66") || String(f.properties.lib_zone || "").match(/perpignan|roussillon|pyren/i));
   console.log("Zones liees au 66 (par code ou nom):", JSON.stringify(code66.map((f) => f.properties), null, 1));
+
+  for (const aasqa of ["53", "03"]) {
+    const r = await fetch(`${BASE_URL}/api/v2/data/indices/atmo?format=geojson&date=2026-10-01&aasqa=${aasqa}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const j = await r.json();
+    console.log(`aasqa=${aasqa} ->`, r.status, "features:", j.features?.length, "types:", [...new Set((j.features ?? []).map((f) => f.properties.type_zone))]);
+  }
 }
 
 main().catch(console.error);
