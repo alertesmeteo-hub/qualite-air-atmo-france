@@ -1,20 +1,21 @@
 #!/usr/bin/env node
 // Pipeline qualite de l'air (indice ATMO global + NO2/O3/PM10/PM2.5/SO2) pour la France
-// entiere, par departement, aujourd'hui et demain.
+// entiere, par commune (puis agregee par departement pour la vue d'ensemble), aujourd'hui
+// et demain.
 //
-// Source : API Atmo France (admindata.atmo-france.org), authentification par compte
-// (voir https://www.atmo-france.org/article/acceder-aux-donnees-de-votre-aasqa). Les
-// identifiants sont passes par variables d'environnement ATMO_USERNAME / ATMO_PASSWORD
-// (secrets GitHub Actions), jamais en dur dans le code.
+// Source : API Atmo Data v2 (admindata.atmo-france.org/api/doc/v2), endpoint
+// GET /api/v2/data/indices/atmo. Authentification par compte (voir
+// https://www.atmo-france.org/article/acceder-aux-donnees-de-votre-aasqa), identifiants
+// passes par variables d'environnement ATMO_USERNAME / ATMO_PASSWORD (secrets GitHub
+// Actions), jamais en dur dans le code.
 //
-// IMPORTANT (a verifier au premier run reel, aucun compte disponible au moment de l'ecriture) :
-// le format exact de "code_zone" pour interroger au niveau departement (plutot que commune,
-// seul niveau documente dans l'integration Home Assistant de reference) n'est pas confirme.
-// On tente d'abord le code INSEE departement tel quel (ex: "66", "2A", "971"). Si l'API ne
-// renvoie aucune "feature" pour un departement, le script le signale dans le resume (voir
-// `manquants` dans la sortie) sans faire echouer tout le run : une persone devra alors
-// verifier via la doc API (admindata.atmo-france.org/api/doc) ou interroger une commune
-// representative du departement et agreger.
+// Il n'existe pas de parametre "departement" cote API : seuls commune/EPCI (code_zone, code
+// INSEE) sont filtrables, ou "toutes les zones" par defaut (ce qu'on utilise ici, une requete
+// par jour). Les ~35000 communes remontees sont ensuite regroupees par departement (les 2
+// premiers caracteres du code INSEE, sauf Corse "2A"/"2B" deja sous cette forme et DOM a
+// prefixe 3 chiffres 971/972/973/974/976) : l'indice retenu pour le departement est le pire
+// (max) constate parmi ses communes, pour une vue d'ensemble coherente avec un principe de
+// precaution.
 //
 // Usage :
 //   ATMO_USERNAME=... ATMO_PASSWORD=... node scripts/fetch-atmo.mjs --output-dir data
@@ -24,30 +25,23 @@ import path from "node:path";
 
 const BASE_URL = "https://admindata.atmo-france.org";
 const AUTH_URL = `${BASE_URL}/api/login`;
-const DATA_URL = `${BASE_URL}/api/data`;
-const CODE_POLLUTION = 112;
+const INDICES_URL = `${BASE_URL}/api/v2/data/indices/atmo`;
 
-// Les 96 departements metropolitains (2A/2B pour la Corse) + DOM principaux. Memes codes que
-// `config/departements-france.geojson` (repo harmonie), reutilisable tel quel pour le tracé de
-// la carte cote front (meme logique de projection lon/lat -> pixel que les autres cartes SVG
-// du site).
-const DEPARTEMENTS = [
-  "01","02","03","04","05","06","07","08","09","10","11","12","13","14","15","16","17","18","19",
-  "2A","2B","21","22","23","24","25","26","27","28","29","30","31","32","33","34","35","36","37",
-  "38","39","40","41","42","43","44","45","46","47","48","49","50","51","52","53","54","55","56",
-  "57","58","59","60","61","62","63","64","65","66","67","68","69","70","71","72","73","74","75",
-  "76","77","78","79","80","81","82","83","84","85","86","87","88","89","90","91","92","93","94",
-  "95","971","972","973","974","976",
-];
+const POLLUTANT_KEYS = ["code_no2", "code_o3", "code_pm10", "code_pm25", "code_so2"];
+const DOM_PREFIXES = ["971", "972", "973", "974", "976"];
 
-const POLLUTANT_KEYS = ["code_no2", "code_o3", "code_pm10", "code_pm25", "code_so2", "code_qual"];
+function departementDeCommune(codeInsee) {
+  if (!codeInsee) return null;
+  const p3 = codeInsee.slice(0, 3);
+  if (DOM_PREFIXES.includes(p3)) return p3;
+  return codeInsee.slice(0, 2); // couvre aussi "2A"/"2B" pour la Corse
+}
 
 function parseArgs(argv) {
-  const args = { outputDir: "data", pacingMs: 300 };
+  const args = { outputDir: "data" };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--output-dir") args.outputDir = argv[++i];
-    else if (a === "--pacing-ms") args.pacingMs = Number(argv[++i]);
     else throw new Error(`Argument inconnu : ${a}`);
   }
   return args;
@@ -56,8 +50,6 @@ function parseArgs(argv) {
 function log(...parts) {
   console.log(`[${new Date().toISOString()}]`, ...parts);
 }
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function getToken(username, password) {
   const res = await fetch(AUTH_URL, {
@@ -69,28 +61,24 @@ async function getToken(username, password) {
     throw new Error(`Echec authentification Atmo France (HTTP ${res.status}) : ${await res.text().catch(() => "")}`);
   }
   const data = await res.json();
-  if (!data.token) throw new Error("Reponse de login sans token");
-  return data.token;
+  const token = data.token ?? data.access_token ?? data.jwt;
+  if (!token) throw new Error(`Reponse de login sans token reconnu : ${JSON.stringify(data)}`);
+  return token;
 }
 
-async function getZoneData(token, zoneCode, todayIso) {
-  const filtre = {
-    code_zone: { operator: "=", value: zoneCode },
-    date_ech: { operator: ">=", value: todayIso },
-  };
-  const url = `${DATA_URL}/${CODE_POLLUTION}/${JSON.stringify(filtre)}?withGeom=false`;
+async function getIndicesForDate(token, dateIso) {
+  const url = `${INDICES_URL}?format=geojson&date=${dateIso}`;
   const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
   if (!res.ok) {
-    log(`  ! HTTP ${res.status} pour ${zoneCode}`);
-    return [];
+    throw new Error(`Echec recuperation indices pour ${dateIso} (HTTP ${res.status}) : ${await res.text().catch(() => "")}`);
   }
   const json = await res.json();
   return Array.isArray(json?.features) ? json.features : [];
 }
 
-function todayIsoParis() {
-  const fmt = new Intl.DateTimeFormat("fr-CA", { timeZone: "Europe/Paris", year: "numeric", month: "2-digit", day: "2-digit" });
-  return fmt.format(new Date());
+function parisDateIso(offsetDays = 0) {
+  const d = new Date(Date.now() + offsetDays * 86_400_000);
+  return new Intl.DateTimeFormat("fr-CA", { timeZone: "Europe/Paris", year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
 }
 
 async function main() {
@@ -105,52 +93,57 @@ async function main() {
   const token = await getToken(username, password);
   log("Token obtenu.");
 
-  const todayIso = todayIsoParis();
-  const departements = {};
-  const manquants = [];
+  const jours = [parisDateIso(0), parisDateIso(1)];
+  const communes = {}; // code_zone -> { nom, parJour: { date: {...} } }
+  const departements = {}; // code_dept -> { parJour: { date: { ...max par polluant, nbCommunes } } }
 
-  for (const code of DEPARTEMENTS) {
-    const features = await getZoneData(token, code, todayIso);
-    if (!features.length) {
-      manquants.push(code);
-      await sleep(args.pacingMs);
-      continue;
-    }
-    const parJour = {};
+  for (const dateIso of jours) {
+    log(`Recuperation des indices pour ${dateIso}...`);
+    const features = await getIndicesForDate(token, dateIso);
+    log(`  ${features.length} communes recues.`);
     for (const f of features) {
       const p = f.properties ?? {};
-      if (!p.date_ech) continue;
-      parJour[p.date_ech] = Object.fromEntries(POLLUTANT_KEYS.map((k) => [k, p[k] ?? null]));
+      const codeInsee = String(p.code_zone ?? "");
+      if (!codeInsee) continue;
+      const valeurs = Object.fromEntries(POLLUTANT_KEYS.map((k) => [k, typeof p[k] === "number" ? p[k] : null]));
+      valeurs.code_qual = typeof p.code_qual === "number" ? p.code_qual : null;
+
+      if (!communes[codeInsee]) communes[codeInsee] = { nom: p.lib_zone ?? null, lat: p.y_wgs84 ?? null, lon: p.x_wgs84 ?? null, parJour: {} };
+      communes[codeInsee].parJour[dateIso] = valeurs;
+
+      const dept = departementDeCommune(codeInsee);
+      if (!dept) continue;
+      if (!departements[dept]) departements[dept] = { parJour: {} };
+      if (!departements[dept].parJour[dateIso]) {
+        departements[dept].parJour[dateIso] = Object.fromEntries([...POLLUTANT_KEYS, "code_qual"].map((k) => [k, null]));
+        departements[dept].parJour[dateIso].nbCommunes = 0;
+      }
+      const agg = departements[dept].parJour[dateIso];
+      agg.nbCommunes++;
+      for (const k of [...POLLUTANT_KEYS, "code_qual"]) {
+        const v = valeurs[k];
+        if (typeof v === "number" && (agg[k] === null || v > agg[k])) agg[k] = v;
+      }
     }
-    departements[code] = {
-      nom: features[0]?.properties?.lib_zone ?? null,
-      typeZone: features[0]?.properties?.type_zone ?? null,
-      dateMaj: features[0]?.properties?.date_maj ?? null,
-      source: features[0]?.properties?.source ?? null,
-      parJour,
-    };
-    log(`  OK ${code} (${departements[code].nom ?? "?"}) : ${Object.keys(parJour).length} jour(s)`);
-    await sleep(args.pacingMs);
   }
 
-  if (manquants.length) {
-    log(`Departements sans donnee (a investiguer, voir commentaire en tete de script) : ${manquants.join(", ")}`);
-  }
-
-  const out = {
-    generatedAt: new Date().toISOString(),
-    todayIso,
-    source: "Atmo France (admindata.atmo-france.org)",
-    departements,
-    manquants,
-  };
+  const nbCommunes = Object.keys(communes).length;
+  const nbDepartements = Object.keys(departements).length;
+  log(`Total : ${nbCommunes} communes, ${nbDepartements} departements.`);
 
   await mkdir(args.outputDir, { recursive: true });
-  await writeFile(path.join(args.outputDir, "departements.json"), JSON.stringify(out));
-  log(`Ecrit ${Object.keys(departements).length}/${DEPARTEMENTS.length} departements dans ${args.outputDir}/departements.json`);
+  await writeFile(
+    path.join(args.outputDir, "departements.json"),
+    JSON.stringify({ generatedAt: new Date().toISOString(), jours, source: "Atmo France (admindata.atmo-france.org)", departements }),
+  );
+  await writeFile(
+    path.join(args.outputDir, "communes.json"),
+    JSON.stringify({ generatedAt: new Date().toISOString(), jours, source: "Atmo France (admindata.atmo-france.org)", communes }),
+  );
+  log(`Ecrit ${args.outputDir}/departements.json et ${args.outputDir}/communes.json`);
 
-  if (!Object.keys(departements).length) {
-    throw new Error("Aucun departement recupere : verifier le format de code_zone (voir commentaire en tete de fichier)");
+  if (!nbCommunes) {
+    throw new Error("Aucune commune recuperee : verifier la reponse de l'API (quota, format de date...)");
   }
 }
 
