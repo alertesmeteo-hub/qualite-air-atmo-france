@@ -1,0 +1,29 @@
+// Script de diagnostic temporaire : pourquoi l'Occitanie (dont le 66) n'apparait pas dans la
+// requete "toutes zones". A supprimer une fois le probleme compris.
+const BASE_URL = "https://admindata.atmo-france.org";
+
+async function main() {
+  const loginRes = await fetch(`${BASE_URL}/api/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: process.env.ATMO_USERNAME, password: process.env.ATMO_PASSWORD }),
+  });
+  const { token } = await loginRes.json();
+  console.log("Token OK");
+
+  // 1) Requete ciblee sur Perpignan (66136)
+  const r1 = await fetch(`${BASE_URL}/api/v2/data/indices/atmo?format=geojson&date=2026-10-01&code_zone=66136`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  console.log("code_zone=66136 ->", r1.status);
+  console.log(await r1.text());
+
+  // 2) Requete filtree sur l'AASQA Occitanie (76)
+  const r2 = await fetch(`${BASE_URL}/api/v2/data/indices/atmo?format=geojson&date=2026-10-01&aasqa=76`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const j2 = await r2.json();
+  console.log("aasqa=76 ->", r2.status, "features:", j2.features?.length);
+}
+
+main().catch(console.error);
