@@ -5,7 +5,11 @@ on:
   schedule:
     # Les données Atmo France sont rafraîchies vers 12h00 Paris ; on vise un peu après,
     # à 11h30 UTC (13h30 Paris en été, 12h30 en hiver) pour laisser de la marge.
+    # Second créneau 2 h plus tard : le déclenchement planifié GitHub dérive souvent
+    # (constaté 15h-19h UTC au lieu de 11h30) ou saute un tick ; `concurrency` ci-dessous
+    # évite tout chevauchement si les deux partent.
     - cron: "30 11 * * *"
+    - cron: "30 13 * * *"
 
 permissions:
   contents: write
